@@ -1,0 +1,46 @@
+Windows Run/Packaging Checklist (ports: backend 5002, frontend 5173, FastAPI 8000)
+
+On Windows (after unzip)
+1) Install Node.js 18+ and Python 3.10+.
+2) Open a terminal in the project folder.
+3) Reinstall dependencies:
+   - PowerShell:
+     Remove-Item -Recurse -Force node_modules, backend/node_modules -ErrorAction SilentlyContinue
+     npm install
+     cd backend; npm install; cd ..
+4) Python venv for inference service:
+   python -m venv .venv
+   .\.venv\Scripts\activate
+   python -m pip install --upgrade pip
+   python -m pip install -r requirements_inference.txt
+5) Environment files:
+   - Copy backend/.env.example to backend/.env if missing.
+   - Ensure in backend/.env:
+       PORT=5002
+       FASTAPI_URL=http://localhost:8000
+       MONGODB_URI=mongodb://localhost:27017/hospital-ai
+       JWT_SECRET=<set-a-secret>
+6) Start services (three terminals or tabs):
+   - FastAPI inference (port 8000):
+       .\.venv\Scripts\activate
+       python backend/inference.py
+   - Backend (port 5002):
+       cd backend
+       npm start
+   - Frontend (port 5173):
+       cd project root
+       npm run dev
+7) App URLs:
+   Frontend: http://localhost:5173
+   Backend health: http://localhost:5002/health
+   FastAPI health: http://localhost:8000/health
+
+If ports are busy on Windows
+- Check: netstat -ano | findstr :5002 (or :8000, :5173)
+- Kill: taskkill /PID <pid> /F
+- If you change PORT in backend/.env, also update src/services/api.js base URL.
+
+Notes
+- Do not zip the .venv directory; recreate it on Windows.
+- Keep model files (best_model.h5 / best_model_latest.h5 / ResNet50_best.h5) in project root as shipped.
+- Confidence display already handles 0–1 and 0–100 values.
