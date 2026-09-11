@@ -1,0 +1,618 @@
+--- CELL 0 ---
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("mariaherrerot/aptos2019")
+
+print("Path to dataset files:", path)
+
+
+--- CELL 1 ---
+import os
+
+def print_tree(startpath, indent=""):
+    for item in os.listdir(startpath):
+        path = os.path.join(startpath, item)
+        print(indent + "|-- " + item)
+        if os.path.isdir(path):
+            print_tree(path, indent + "    ")
+
+# Example usage:
+print_tree("/content/drive/MyDrive/archive (1)")
+
+
+OUTPUTS PRESENT:
+stdout: |-- test.csv
+|-- train_1.csv
+|-- valid.csv
+|-- desktop.ini
+|-- test_images
+    |-- test_images
+        |-- e4dcca36ceb4.png
+        |-- e50b0174690d.png
+        |-- e4e343eaae2a.png
+        |-- e529c5757d64.png
+        |-- e4f12411fd85.png
+        |-- e5197d77ec68.png
+        |-- e65a2ff90494.png
+        |-- e59c5f345bb0.png
+        |-- e6a5e4718873.png
+        |-- e724866f5084.png
+        |-- e7578d8dba72.png
+        |-- e7a372a1c3a4.png
+        |-- e69b48516577.png
+        |-- e65f94ad9be3.png
+        |-- e7a7187066ad.png
+        |-- e66855a5c583.png
+        |-- e60e4edb3ca9.png
+        |-- e599151ca14b.png
+        |-- e68bdd36e589.png
+        |-- e6f0ce5bf282.png
+        |-- e79e10907295.png
+        |-- e663c6627a95.png
+        |-- e68746d426b2.png
+        |-- e740af6ac6ea.png
+        |-- e77a93c3d9a9.png
+        |-- e5d56f4f359b.png
+        |-- e6a58edc5b42.png
+        |-- e756495c11cb.png
+        |-- e594c19e2e1d.png
+        |-- e6a6acf7fca1.png
+        |-- e66ad813a508.png
+      
+
+--- CELL 2 ---
+"""
+Complete CNN Multi-Model Training Pipeline
+Models: ResNet50, DenseNet121, InceptionV3, EfficientNetB3
+Dataset Split: 75% Train, 20% Val, 5% Inference
+"""
+
+# ============================================================================
+# Section 1 — Imports and Constants
+# ============================================================================
+
+import os
+import shutil
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                             f1_score, classification_report, confusion_matrix,
+                             roc_curve, auc, roc_auc_score)
+from sklearn.preprocessing import label_binarize
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import ResNet50, DenseNet121, InceptionV3, EfficientNetB3
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.optimizers import Adam
+import warnings
+warnings.filterwarnings('ignore')
+
+# Constants
+DATASET_DIR = '/content/drive/MyDrive/archive (1)'
+TRAIN_IMAGES_DIR = os.path.join(DATASET_DIR, 'train_images/train_images')
+TRAIN_CSV = os.path.join(DATASET_DIR, 'train_1.csv')
+SPLITS_DIR = './splits'
+MODELS_DIR = './models'
+IMG_SIZE = (224, 224)
+BATCH_SIZE = 32
+EPOCHS = 20
+LEARNING_RATE = 1e-4
+NUM_CLASSES = 5
+
+# Create directories
+os.makedirs(SPLITS_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
+os.makedirs(os.path.join(SPLITS_DIR, 'train'), exist_ok=True)
+os.makedirs(os.path.join(SPLITS_DIR, 'val'), exist_ok=True)
+os.makedirs(os.path.join(SPLITS_DIR, 'inference'), exist_ok=True)
+
+print("✓ Imports completed")
+print(f"✓ Dataset directory: {DATASET_DIR}")
+print(f"✓ Train images directory: {TRAIN_IMAGES_DIR}")
+
+# ============================================================================
+# Section 2 — Load Dataset
+# ============================================================================
+
+# Load labels CSV
+df = pd.read_csv(TRAIN_CSV)
+print(f"\n✓ Loaded CSV with {len(df)} records")
+print(f"✓ Columns: {df.columns.tolist()}")
+print(f"\n✓ First few rows:")
+print(df.head())
+
+# Rename columns to standard names
+df = df.rename(columns={'id_code': 'image_id', 'diagnosis': 'label'})
+
+# Add .png extension and full image paths
+df['image_id_with_ext'] = df['image_id'] + '.png'
+df['image_path'] = df['image_id_with_ext'].apply(lambda x: os.path.join(TRAIN_IMAGES_DIR, x))
+
+# Verify images exist
+df['exists'] = df['image_path'].apply(os.path.exists)
+print(f"\n✓ Images found: {df['exists'].sum()} / {len(df)}")
+
+# Remove missing images
+df = df[df['exists']].drop('exists', axis=1).reset_index(drop=True)
+print(f"✓ Working with {len(df)} images")
+
+# Display class distribution
+print(f"\n✓ Class distribution:")
+print(df['label'].value_counts().sort_index())
+
+# ============================================================================
+# Section 3 — Dataset Splitting (75:20:5)
+# ============================================================================
+
+print("\n" + "="*60)
+print("SPLITTING DATASET: 75% Train, 20% Val, 5% Inference")
+print("="*60)
+
+# First split: 95% (train+val) and 5% (inference)
+train_val_df, inference_df = train_test_split(
+    df,
+    test_size=0.05,
+    stratify=df['label'],
+    random_state=42
+)
+
+# Second split: 75/20 from the remaining 95%
+# 75% of total = 75/95 of train_val
+# 20% of total = 20/95 of train_val
+train_df, val_df = train_test_split(
+    train_val_df,
+    test_size=0.20/(0.75+0.20),  # 20/95
+    stratify=train_val_df['label'],
+    random_state=42
+)
+
+print(f"\n✓ Train set: {len(train_df)} ({len(train_df)/len(df)*100:.1f}%)")
+print(f"✓ Validation set: {len(val_df)} ({len(val_df)/len(df)*100:.1f}%)")
+print(f"✓ Inference set: {len(inference_df)} ({len(inference_df)/len(df)*100:.1f}%)")
+
+# Save CSVs
+train_df.to_csv(os.path.join(SPLITS_DIR, 'train.csv'), index=False)
+val_df.to_csv(os.path.join(SPLITS_DIR, 'val.csv'), index=False)
+inference_df.to_csv(os.path.join(SPLITS_DIR, 'inference.csv'), index=False)
+print("\n✓ Split CSVs saved")
+
+# Copy images to respective folders
+def copy_images_to_split(df, split_name):
+    split_dir = os.path.join(SPLITS_DIR, split_name)
+    for idx, row in df.iterrows():
+        src = row['image_path']
+        dst = os.path.join(split_dir, row['image_id_with_ext'])
+        if not os.path.exists(dst):
+            shutil.copy2(src, dst)
+    print(f"✓ Copied {len(df)} images to {split_name}/")
+
+copy_images_to_split(train_df, 'train')
+copy_images_to_split(val_df, 'val')
+copy_images_to_split(inference_df, 'inference')
+
+# Prepare dataframes for generators
+train_df['label'] = train_df['label'].astype(str)
+val_df['label'] = val_df['label'].astype(str)
+inference_df['label'] = inference_df['label'].astype(str)
+
+# ============================================================================
+# Section 4 — Data Generators
+# ============================================================================
+
+print("\n" + "="*60)
+print("CREATING DATA GENERATORS")
+print("="*60)
+
+# Training generator with augmentation
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=20,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    horizontal_flip=True,
+    zoom_range=0.2,
+    fill_mode='nearest'
+)
+
+# Validation and inference generators (no augmentation)
+val_datagen = ImageDataGenerator(rescale=1./255)
+
+# Create generators
+train_gen = train_datagen.flow_from_dataframe(
+    train_df,
+    x_col='image_path',
+    y_col='label',
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    shuffle=True
+)
+
+val_gen = val_datagen.flow_from_dataframe(
+    val_df,
+    x_col='image_path',
+    y_col='label',
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    shuffle=False
+)
+
+inference_gen = val_datagen.flow_from_dataframe(
+    inference_df,
+    x_col='image_path',
+    y_col='label',
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    shuffle=False
+)
+
+print(f"✓ Training batches: {len(train_gen)}")
+print(f"✓ Validation batches: {len(val_gen)}")
+print(f"✓ Inference batches: {len(inference_gen)}")
+print(f"✓ Class indices: {train_gen.class_indices}")
+
+# ============================================================================
+# Section 5 — Define the 4 CNN Models
+# ============================================================================
+
+print("\n" + "="*60)
+print("DEFINING 4 CNN MODELS")
+print("="*60)
+
+def create_model(base_model, name):
+    """Create a transfer learning model with custom top layers"""
+    model = models.Sequential([
+        base_model,
+        layers.GlobalAveragePooling2D(),
+        layers.Dense(256, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(NUM_CLASSES, activation='softmax')
+    ], name=name)
+
+    model.compile(
+        optimizer=Adam(learning_rate=LEARNING_RATE),
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+    return model
+
+# ResNet50
+base_resnet = ResNet50(
+    include_top=False,
+    weights='imagenet',
+    input_shape=(224, 224, 3)
+)
+base_resnet.trainable = False
+model_resnet = create_model(base_resnet, 'ResNet50')
+print(f"✓ ResNet50 created - Total params: {model_resnet.count_params():,}")
+
+# DenseNet121
+base_densenet = DenseNet121(
+    include_top=False,
+    weights='imagenet',
+    input_shape=(224, 224, 3)
+)
+base_densenet.trainable = False
+model_densenet = create_model(base_densenet, 'DenseNet121')
+print(f"✓ DenseNet121 created - Total params: {model_densenet.count_params():,}")
+
+# InceptionV3
+base_inception = InceptionV3(
+    include_top=False,
+    weights='imagenet',
+    input_shape=(224, 224, 3)
+)
+base_inception.trainable = False
+model_inception = create_model(base_inception, 'InceptionV3')
+print(f"✓ InceptionV3 created - Total params: {model_inception.count_params():,}")
+
+# EfficientNetB3
+base_effnet = EfficientNetB3(
+    include_top=False,
+    weights='imagenet',
+    input_shape=(224, 224, 3)
+)
+base_effnet.trainable = False
+model_effnet = create_model(base_effnet, 'EfficientNetB3')
+print(f"✓ EfficientNetB3 created - Total params: {model_effnet.count_params():,}")
+
+# ============================================================================
+# Section 6 — Training Loop for All 4 Models
+# ============================================================================
+
+print("\n" + "="*60)
+print("TRAINING ALL 4 MODELS")
+print("="*60)
+
+models_dict = {
+    'ResNet50': model_resnet,
+    'DenseNet121': model_densenet,
+    'InceptionV3': model_inception,
+    'EfficientNetB3': model_effnet
+}
+
+histories = {}
+
+for model_name, model in models_dict.items():
+    print(f"\n{'='*60}")
+    print(f"Training {model_name}")
+    print(f"{'='*60}")
+
+    # Callbacks
+    callbacks = [
+        EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=3,
+            min_lr=1e-7,
+            verbose=1
+        ),
+        ModelCheckpoint(
+            filepath=os.path.join(MODELS_DIR, f'{model_name}_best.h5'),
+            monitor='val_accuracy',
+            save_best_only=True,
+            verbose=1
+        )
+    ]
+
+    # Train model
+    history = model.fit(
+        train_gen,
+        validation_data=val_gen,
+        epochs=EPOCHS,
+        callbacks=callbacks,
+        verbose=1
+    )
+
+    histories[model_name] = history.history
+    print(f"✓ {model_name} training completed")
+
+print("\n✓ All models trained successfully")
+
+# ============================================================================
+# Section 7 — Validation Metrics
+# ============================================================================
+
+print("\n" + "="*60)
+print("COMPUTING VALIDATION METRICS")
+print("="*60)
+
+metrics_data = []
+
+for model_name, model in models_dict.items():
+    print(f"\n{'='*60}")
+    print(f"Evaluating {model_name}")
+    print(f"{'='*60}")
+
+    # Reset validation generator
+    val_gen.reset()
+
+    # Get predictions
+    y_pred_probs = model.predict(val_gen, verbose=0)
+    y_pred = np.argmax(y_pred_probs, axis=1)
+    y_true = val_gen.classes
+
+    # Compute metrics
+    acc = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred, average='macro')
+    rec = recall_score(y_true, y_pred, average='macro')
+    f1 = f1_score(y_true, y_pred, average='macro')
+
+    # Binarize labels for ROC/AUC
+    y_true_bin = label_binarize(y_true, classes=range(NUM_CLASSES))
+    auc_macro = roc_auc_score(y_true_bin, y_pred_probs, average='macro')
+
+    # Store metrics
+    metrics_data.append({
+        'model_name': model_name,
+        'accuracy': acc,
+        'precision_macro': prec,
+        'recall_macro': rec,
+        'f1_macro': f1,
+        'auc_macro': auc_macro
+    })
+
+    print(f"\nAccuracy: {acc:.4f}")
+    print(f"Precision (macro): {prec:.4f}")
+    print(f"Recall (macro): {rec:.4f}")
+    print(f"F1-score (macro): {f1:.4f}")
+    print(f"AUC (macro): {auc_macro:.4f}")
+
+    # Classification report
+    print(f"\nClassification Report:")
+    print(classification_report(y_true, y_pred, target_names=[str(i) for i in range(NUM_CLASSES)]))
+
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=range(NUM_CLASSES), yticklabels=range(NUM_CLASSES))
+    plt.title(f'Confusion Matrix - {model_name}')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    plt.tight_layout()
+    plt.savefig(f'confusion_matrix_{model_name}.png', dpi=150, bbox_inches='tight')
+    plt.show()
+
+    # ROC curves
+    plt.figure(figsize=(10, 8))
+    for i in range(NUM_CLASSES):
+        fpr, tpr, _ = roc_curve(y_true_bin[:, i], y_pred_probs[:, i])
+        roc_auc = auc(fpr, tpr)
+        plt.plot(fpr, tpr, lw=2, label=f'Class {i} (AUC = {roc_auc:.3f})')
+
+    plt.plot([0, 1], [0, 1], 'k--', lw=2, label='Random')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'ROC Curves - {model_name}')
+    plt.legend(loc='lower right')
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f'roc_curves_{model_name}.png', dpi=150, bbox_inches='tight')
+    plt.show()
+
+    # Training curves
+    history = histories[model_name]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Accuracy
+    axes[0].plot(history['accuracy'], label='Train Accuracy', linewidth=2)
+    axes[0].plot(history['val_accuracy'], label='Val Accuracy', linewidth=2)
+    axes[0].set_title(f'{model_name} - Accuracy')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Accuracy')
+    axes[0].legend()
+    axes[0].grid(alpha=0.3)
+
+    # Loss
+    axes[1].plot(history['loss'], label='Train Loss', linewidth=2)
+    axes[1].plot(history['val_loss'], label='Val Loss', linewidth=2)
+    axes[1].set_title(f'{model_name} - Loss')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('Loss')
+    axes[1].legend()
+    axes[1].grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(f'training_curves_{model_name}.png', dpi=150, bbox_inches='tight')
+    plt.show()
+
+print("\n✓ All validation metrics computed")
+
+# ============================================================================
+# Section 8 — Save Metrics to CSV
+# ============================================================================
+
+print("\n" + "="*60)
+print("SAVING METRICS TO CSV")
+print("="*60)
+
+metrics_df = pd.DataFrame(metrics_data)
+metrics_df = metrics_df.round(4)
+csv_path = 'cnn_model_comparison.csv'
+metrics_df.to_csv(csv_path, index=False)
+
+print(f"\n✓ Metrics saved to {csv_path}")
+print("\nFinal Metrics Comparison:")
+print(metrics_df.to_string(index=False))
+
+# ============================================================================
+# Section 9 — Save Final Models
+# ============================================================================
+
+print("\n" + "="*60)
+print("SAVING FINAL MODELS")
+print("="*60)
+
+for model_name, model in models_dict.items():
+    model_path = os.path.join(MODELS_DIR, f'{model_name}_final.h5')
+    model.save(model_path)
+    print(f"✓ Saved {model_name} to {model_path}")
+
+print("\n✓ All models saved successfully")
+
+# ============================================================================
+# Section 10 — Save Dataset Splits (Already Done in Section 3)
+# ============================================================================
+
+print("\n" + "="*60)
+print("DATASET SPLITS SUMMARY")
+print("="*60)
+
+print(f"\n✓ Train split: {os.path.join(SPLITS_DIR, 'train/')}")
+print(f"  - Images: {len(os.listdir(os.path.join(SPLITS_DIR, 'train')))}")
+print(f"  - CSV: {os.path.join(SPLITS_DIR, 'train.csv')}")
+
+print(f"\n✓ Validation split: {os.path.join(SPLITS_DIR, 'val/')}")
+print(f"  - Images: {len(os.listdir(os.path.join(SPLITS_DIR, 'val')))}")
+print(f"  - CSV: {os.path.join(SPLITS_DIR, 'val.csv')}")
+
+print(f"\n✓ Inference split: {os.path.join(SPLITS_DIR, 'inference/')}")
+print(f"  - Images: {len(os.listdir(os.path.join(SPLITS_DIR, 'inference')))}")
+print(f"  - CSV: {os.path.join(SPLITS_DIR, 'inference.csv')}")
+
+# ============================================================================
+# PIPELINE COMPLETE
+# ============================================================================
+
+print("\n" + "="*60)
+print("✓✓✓ PIPELINE COMPLETE ✓✓✓")
+print("="*60)
+print("\nGenerated Files:")
+print("  1. cnn_model_comparison.csv - Model metrics comparison")
+print("  2. models/ResNet50_final.h5")
+print("  3. models/DenseNet121_final.h5")
+print("  4. models/InceptionV3_final.h5")
+print("  5. models/EfficientNetB3_final.h5")
+print("  6. splits/train/ - Training images + train.csv")
+print("  7. splits/val/ - Validation images + val.csv")
+print("  8. splits/inference/ - Inference images + inference.csv")
+print("  9. Confusion matrices (PNG)")
+print(" 10. ROC curves (PNG)")
+print(" 11. Training curves (PNG)")
+print("\n" + "="*60)
+
+OUTPUTS PRESENT:
+stdout: ✓ Imports completed
+✓ Dataset directory: /content/drive/MyDrive/archive (1)
+✓ Train images directory: /content/drive/MyDrive/archive (1)/train_images/train_images
+
+✓ Loaded CSV with 2930 records
+✓ Columns: ['id_code', 'diagnosis']
+
+✓ First few rows:
+        id_code  diagnosis
+0  1ae8c165fd53          2
+1  1b329a127307          1
+2  1b32e1d775ea          4
+3  1b3647865779          0
+4  1b398c0494d1          0
+
+✓ Images found: 2930 / 2930
+✓ Working with 2930 images
+
+✓ Class distribution:
+label
+0    1434
+1     300
+2     808
+3     154
+4     234
+Name: count, dtype: int64
+
+============================================================
+SPLITTING DATASET: 75% Train, 20% Val, 5% Inference
+============================================================
+
+✓ Train set: 2197 (75.0%)
+✓ Validation set: 586 (20.0%)
+✓ Inference set: 147 (5.0%)
+
+✓ Split CSVs saved
+
+Type: error
+
+--- CELL 3 ---
+from google.colab import files
+uploaded = files.upload()
+
+
+OUTPUTS PRESENT:
+Type: display_data
+
