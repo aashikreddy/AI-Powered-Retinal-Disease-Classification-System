@@ -1,3 +1,4 @@
+# Logs
 logs
 *.log
 npm-debug.log*
@@ -6,41 +7,72 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# Node
+node_modules/
+dist/
+dist-ssr/
+build/
+coverage/
 
+# Local/Environment
+*.local
+.env
+.env.*
+!.env.example
+
+# IDEs and OS
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
-*.njsproj
 *.njsproj
 *.sln
 *.sw?
 
-.env
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
 
-# Python virtual environments
+# Virtual environments
 .venv/
 venv/
 env/
-
-# Python cache
-__pycache__/
-*.py[cod]
+ENV/
 
 # Bolt
 .bolt/
 
-# Generated AI diagnostic reports
-backend/ai_diagnostic_reports/
+# Runtime uploads / generated reports
+backend/uploads/*
+backend/temp_inference/*
+backend/ai_diagnostic_reports/*
+ai_diagnostic_reports/*
 
-# Generated/test reports
+# Generated/test artifacts
+test_artifacts/
 fake_reports_from_zip/
 
-# Trained ML models
+# Dataset
+data/
+test_images/
+test.csv
+
+# Model artifacts
 *.h5
+*.keras
+*.ckpt
+*.pt
+*.pth
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Experiment generated outputs
+experiments/**/results/
+experiments/**/outputs/

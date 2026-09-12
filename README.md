@@ -188,6 +188,8 @@ Softmax Probabilities
 
 ## Inference Pipeline
 
+Production inference uses RGB image resizing to 224×224, float32 conversion, and normalization to [0,1] by dividing pixel values by 255.
+
 The deployed inference pipeline transforms an extracted image as follows:
 
 ```text
@@ -204,9 +206,6 @@ float32 Conversion
         │
         ▼
 Scale by 1 / 255
-        │
-        ▼
-ImageNet Mean / Standard Deviation Normalization
         │
         ▼
 Batch Dimension
@@ -632,50 +631,87 @@ python --version
 git --version
 ```
 
-### Clone the Repository
+### 1. Clone the Repository
 
 ```bash
 git clone <repository-url>
 cd <repository-directory>
 ```
 
-### Install Node Dependencies
+### 2. Install Frontend Dependencies
 
 ```bash
 npm install
 ```
+*(Note: If frontend is in root or src, run `npm install` in the appropriate directory where package.json is)*
 
-Install backend dependencies according to the backend package configuration.
+### 3. Install Backend Dependencies
 
-### Python Environment
-
-Create and activate a Python virtual environment.
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
+```bash
+cd backend
+npm install
 ```
 
-The deployed legacy HDF5 model requires the Keras compatibility environment used by the inference service.
+### 4. Environment Configuration
 
----
-
-## Environment Configuration
-
-Configure the backend environment with values appropriate for the local installation.
+Configure the backend environment with values appropriate for the local installation. Create a `backend/.env` file using `backend/.env.example` as a template.
 
 Example:
 
 ```env
-MONGODB_URI=mongodb://localhost:27017/retinal_disease
-JWT_SECRET=your_secure_secret
+MONGODB_URI=mongodb://localhost:27017/hospital-ai
+JWT_SECRET=<set-a-secure-secret>
 PORT=5002
-FASTAPI_URL=http://localhost:8000
+FASTAPI_URL=http://127.0.0.1:8000
+INTERNAL_API_KEY=<set-an-internal-api-key>
 ```
 
 For production deployments, secrets must be supplied through a secure secret-management mechanism rather than committed to source control.
+
+### 5. Download Model Files
+
+The trained model files are not included in this GitHub repository because of their large file size.
+
+Download the model files from:
+
+[Google Drive — Model Files](https://drive.google.com/drive/folders/1cc56eQx80pK-u3jOAMNgfuGUgIbMLgOK?usp=sharing)
+
+### 6. Place the Required Model
+
+After downloading, place the required model file in the `models/` directory.
+
+For the production application, the **PRIMARY PRODUCTION MODEL** is required:
+
+`models/best_model_latest.h5`
+
+This model is a DenseNet121 architecture trained for 5-class diabetic retinopathy classification. The repository expects this exact filename and location.
+
+**ADDITIONAL MODEL:**
+
+`models/ResNet50_best.h5`
+
+*(Note: This is an additional experimental model and is not required for normal application execution).*
+
+Example structure:
+
+```text
+models/
+├── best_model_latest.h5
+└── ResNet50_best.h5
+```
+
+### Python Environment Setup
+
+Create and activate a Python virtual environment to run the inference service.
+
+Windows PowerShell:
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r ../requirements_inference.txt
+```
 
 ---
 
@@ -762,7 +798,13 @@ The architecture separates:
 - persistence
 - generated-file storage
 
-Security hardening remains an area of ongoing development, particularly around report ownership and authorization, input validation, internal inference-service access, and production deployment controls.
+Current security behaviors include:
+- Report history requires authentication.
+- Reports are associated with the authenticated user's userId.
+- History is filtered by userId.
+- Report download verifies both report ID and authenticated userId.
+- Cross-user report access is rejected.
+- Invalid/malformed report IDs are rejected.
 
 The system should not be exposed directly to clinical or public traffic without appropriate security review, authorization controls, infrastructure hardening, monitoring, and validation.
 
@@ -772,9 +814,9 @@ The system should not be exposed directly to clinical or public traffic without 
 
 ### PDF Image Selection
 
-The current implementation extracts images from a PDF but uses the first extracted image for model inference.
+Images are extracted from the PDF. The system uses the largest-area extracted image as a heuristic selection method. PDFs containing more than 50 embedded images are rejected. PDFs with no extractable images are rejected.
 
-If a document contains multiple images, the first image may not necessarily be the retinal fundus image.
+Note that this largest-area selection is a heuristic, not a true retinal-image detector. The system cannot guarantee that the selected image is a retinal fundus image.
 
 ### Non-Retinal Images
 
@@ -815,7 +857,7 @@ Class imbalance can affect model learning and evaluation.
 
 Potential improvements include:
 
-- Robust retinal-image selection for multi-image PDFs
+- Dedicated retinal-image detector/OOD validation
 - Dedicated retinal vs non-retinal image validation
 - Out-of-distribution detection
 - Model calibration
@@ -849,11 +891,11 @@ Potential improvements include:
 | DenseNet121 inference | Functional |
 | Five-class DR classification | Functional |
 | AI-generated PDF report | Functional |
-| Report history | Functional, authorization hardening required |
-| Report download | Functional, authorization hardening required |
-| Multi-image PDF handling | Improvement required |
+| Report history | Functional (User-specific isolation implemented) |
+| Report download | Functional (User-specific isolation implemented) |
+| Multi-image PDF handling | Functional (Largest-image heuristic, max 50 images) |
 | Training reproducibility | Incomplete |
-| Automated test suite | Planned |
+| Automated test suite | Functional (Backend integration tests) |
 | Clinical deployment | Not suitable in current state |
 
 ---

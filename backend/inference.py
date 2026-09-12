@@ -3,7 +3,7 @@ FastAPI Inference Server for Diabetic Retinopathy Detection
 Workflow: PDF Input -> Image Extraction -> ResNet50 Model Inference -> PDF Output
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.responses import FileResponse
 import uvicorn
 import os
@@ -12,6 +12,7 @@ import tempfile
 import numpy as np
 from datetime import datetime
 import shutil
+import secrets
 
 # Enable legacy tf.keras loader to accept older layer names (e.g., containing '/').
 os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
@@ -28,9 +29,6 @@ import cv2
 import PyPDF2
 import fitz  # PyMuPDF for better PDF handling
 
-# Add parent directory to path for imports
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
 from finaloutputpdfgenerator import generate_ai_report
 
 # =========================================
@@ -41,7 +39,7 @@ from finaloutputpdfgenerator import generate_ai_report
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
-MODEL_PATH = os.path.join(PROJECT_ROOT, 'best_model_latest.h5')
+MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'best_model_latest.h5')
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'ai_diagnostic_reports')
 UPLOAD_DIR = os.path.join(SCRIPT_DIR, 'uploads')
 TEMP_DIR = os.path.join(SCRIPT_DIR, 'temp_inference')
@@ -108,6 +106,12 @@ def extract_images_from_pdf(pdf_path):
         # Try PyMuPDF first (better quality)
         pdf_document = fitz.open(pdf_path)
         
+        total_images = sum(len(page.get_images()) for page in pdf_document)
+        if total_images > 50:
+            pdf_document.close()
+            raise HTTPException(status_code=400, detail="PDF contains too many images, maximum allowed is 50")
+            
+
         for page_num in range(len(pdf_document)):
             page = pdf_document[page_num]
             image_list = page.get_images()
@@ -128,10 +132,17 @@ def extract_images_from_pdf(pdf_path):
                         pix_rgb = fitz.Pixmap(fitz.csRGB, pix)
                         pix_rgb.save(image_filename)
                     
-                    images.append(image_filename)
+                    images.append({
+                        "path": image_filename,
+                        "width": pix.w,
+                        "height": pix.h,
+                        "area": pix.w * pix.h
+                    })
         
         pdf_document.close()
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Warning: PyMuPDF extraction failed: {e}, trying PyPDF2...")
         
@@ -164,9 +175,6 @@ def preprocess_image(image_path):
         
         # Normalize to [0, 1]
         img_array = img_array / 255.0
-        
-        # Apply ImageNet normalization
-        img_array = (img_array - MEAN) / STD
         
         # Add batch dimension
         img_array = np.expand_dims(img_array, axis=0)
@@ -248,11 +256,25 @@ async def health_check():
     }
 
 @app.post("/infer_pdf")
-async def infer_pdf(file: UploadFile = File(...)):
+async def infer_pdf(file: UploadFile = File(...), x_internal_secret: str = Header(None)):
     """
     Main inference endpoint.
     Accepts PDF, extracts images, runs inference, returns output PDF.
     """
+    expected_secret = os.getenv("INTERNAL_API_KEY")
+    if not expected_secret:
+        env_path = os.path.join(SCRIPT_DIR, '.env')
+        try:
+            with open(env_path, 'r') as f:
+                for line in f:
+                    if line.startswith('INTERNAL_API_KEY='):
+                        expected_secret = line.strip().split('=', 1)[1]
+                        break
+        except Exception:
+            pass
+
+    if not expected_secret or not x_internal_secret or not secrets.compare_digest(expected_secret, x_internal_secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     pdf_path = None
     extracted_images = []
     
@@ -261,8 +283,11 @@ async def infer_pdf(file: UploadFile = File(...)):
         if not file.filename.endswith('.pdf'):
             raise HTTPException(status_code=400, detail="File must be a PDF")
         
-        # Save uploaded PDF temporarily
-        pdf_path = os.path.join(TEMP_DIR, file.filename)
+        import uuid
+        
+        # Save uploaded PDF temporarily with a safe filename
+        safe_filename = f"{uuid.uuid4()}.pdf"
+        pdf_path = os.path.join(TEMP_DIR, safe_filename)
         with open(pdf_path, 'wb') as f:
             content = await file.read()
             f.write(content)
@@ -282,8 +307,10 @@ async def infer_pdf(file: UploadFile = File(...)):
         
         print(f"✓ Extracted {len(extracted_images)} image(s) from PDF")
         
-        # Use first extracted image for inference
-        image_path = extracted_images[0]
+        # Select the image with the largest pixel area
+        selected_image = max(extracted_images, key=lambda x: x["area"])
+        image_path = selected_image["path"]
+        print(f"✓ Selected largest image: {selected_image['width']}x{selected_image['height']} (Area: {selected_image['area']})")
         
         # Preprocess image
         img_array = preprocess_image(image_path)
@@ -336,7 +363,8 @@ async def infer_pdf(file: UploadFile = File(...)):
             except:
                 pass
         
-        for img_path in extracted_images:
+        for img_item in extracted_images:
+            img_path = img_item["path"] if isinstance(img_item, dict) else img_item
             if os.path.exists(img_path):
                 try:
                     os.remove(img_path)
@@ -379,7 +407,7 @@ if __name__ == "__main__":
     
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=8000,
         log_level="info"
     )
